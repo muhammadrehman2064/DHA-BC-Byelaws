@@ -3,89 +3,123 @@ import os
 
 from dotenv import load_dotenv
 
-
-# =========================================================
-# LOAD LOCAL .ENV
-# =========================================================
+=========================================================
+LOAD ENVIRONMENT VARIABLES
+=========================================================
 
 load_dotenv()
 
+=========================================================
+PROJECT PATHS
+=========================================================
 
-# =========================================================
-# PROJECT PATHS
-# =========================================================
-
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(file).resolve().parent
 
 DATA_DIR = BASE_DIR / "data"
 
-PDF_PATH = DATA_DIR / "building_bylaws.pdf"
-
 INDEX_PATH = DATA_DIR / "index.json"
 
+PDF_PATH = DATA_DIR / "building_bylaws.pdf"
 
-# =========================================================
-# GROQ
-# =========================================================
+=========================================================
+GROQ
+=========================================================
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv(
+"GROQ_API_KEY",
+""
+).strip()
 
-# Current Groq production model suitable for this project.
+Groq production model.
+GPT-OSS 20B is currently available on Groq and supports
+reasoning controls.
+You can change this from Streamlit Secrets/environment
+variables without changing the code.
+
 LLM_MODEL = os.getenv(
-    "LLM_MODEL",
-    "openai/gpt-oss-20b",
+"LLM_MODEL",
+"openai/gpt-oss-20b",
 )
 
-
-# =========================================================
-# EMBEDDINGS
-# =========================================================
-
-# This model runs locally.
-# It does NOT require an API key.
+=========================================================
+EMBEDDINGS
+=========================================================
+IMPORTANT:
+This MUST match the embedding model used when the
+index.json was created in Google Colab.
 
 EMBEDDING_MODEL = os.getenv(
-    "EMBEDDING_MODEL",
-    "sentence-transformers/all-MiniLM-L6-v2",
+"EMBEDDING_MODEL",
+"sentence-transformers/all-MiniLM-L6-v2",
 )
 
+=========================================================
+RAG SETTINGS
+=========================================================
+Number of candidate passages retrieved from the index.
 
-# =========================================================
-# RAG SETTINGS
-# =========================================================
-
-# Number of document chunks retrieved.
 TOP_K = int(
-    os.getenv(
-        "TOP_K",
-        "5",
-    )
+os.getenv(
+"TOP_K",
+"6",
+)
 )
 
+Minimum similarity required for the RAG system
+to consider the retrieval useful.
 
-# Minimum similarity required before sending
-# retrieved context to the LLM.
 SIMILARITY_THRESHOLD = float(
-    os.getenv(
-        "SIMILARITY_THRESHOLD",
-        "0.35",
-    )
+os.getenv(
+"SIMILARITY_THRESHOLD",
+"0.35",
+)
 )
 
+Maximum number of previous chat messages sent to
+the LLM as conversational context.
 
-# Approximate character size of each chunk.
-CHUNK_SIZE = int(
-    os.getenv(
-        "CHUNK_SIZE",
-        "1200",
-    )
+MAX_HISTORY_MESSAGES = int(
+os.getenv(
+"MAX_HISTORY_MESSAGES",
+"8",
+)
 )
 
+Maximum number of document passages actually sent
+to the LLM after retrieval filtering.
 
-# Number of overlapping characters.
-CHUNK_OVERLAP = int(
-    os.getenv(
-        "CHUNK_OVERLAP",
-        "200",
-    )
+MAX_CONTEXT_CHUNKS = int(
+os.getenv(
+"MAX_CONTEXT_CHUNKS",
+"5",
+)
+)
+
+Maximum output tokens for the LLM.
+
+MAX_COMPLETION_TOKENS = int(
+os.getenv(
+"MAX_COMPLETION_TOKENS",
+"2000",
+)
+)
+
+=========================================================
+OPTIONAL GENERATION SETTINGS
+=========================================================
+
+TEMPERATURE = float(
+os.getenv(
+"TEMPERATURE",
+"0.2",
+)
+)
+
+=========================================================
+APPLICATION
+=========================================================
+
+APP_TITLE = os.getenv(
+"APP_TITLE",
+"DHA Building Byelaw AI Assistant",
 )
