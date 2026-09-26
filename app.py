@@ -1,19 +1,18 @@
 """
 app.py
 
-Streamlit application for the Building Byelaw RAG
-Assistant.
+Streamlit application for the DHA Building Byelaw
+RAG Assistant.
 """
-
-
-import os
 
 import streamlit as st
 from groq import Groq
 
 from config import (
+    APP_TITLE,
     GROQ_API_KEY,
     LLM_MODEL,
+    MAX_HISTORY_MESSAGES,
     SIMILARITY_THRESHOLD,
     TOP_K,
 )
@@ -29,9 +28,35 @@ from rag import (
 # =========================================================
 
 st.set_page_config(
-    page_title="DHA Building Byelaw AI",
+    page_title=APP_TITLE,
     page_icon="🏗️",
     layout="wide",
+)
+
+
+# =========================================================
+# CUSTOM CSS
+# =========================================================
+
+st.markdown(
+    """
+<style>
+
+.main-title {
+    font-size: 2.2rem;
+    font-weight: 700;
+    margin-bottom: 5px;
+}
+
+.subtitle {
+    color: #777;
+    font-size: 1rem;
+    margin-bottom: 20px;
+}
+
+</style>
+""",
+    unsafe_allow_html=True,
 )
 
 
@@ -41,21 +66,23 @@ st.set_page_config(
 
 def get_groq_api_key() -> str:
     """
-    Get the Groq API key.
+    Get Groq API key.
 
     Priority:
 
-    1. Streamlit Cloud secrets
-    2. Environment variable / .env
+    1. Streamlit Cloud Secrets
+    2. Environment variable
     """
 
     try:
 
         if "GROQ_API_KEY" in st.secrets:
 
-            return st.secrets[
-                "GROQ_API_KEY"
-            ]
+            return str(
+                st.secrets[
+                    "GROQ_API_KEY"
+                ]
+            ).strip()
 
     except Exception:
 
@@ -65,32 +92,11 @@ def get_groq_api_key() -> str:
 
 
 # =========================================================
-# HEADER
-# =========================================================
-
-st.title(
-    "🏗️ DHA Building Byelaw AI Assistant"
-)
-
-st.markdown(
-    """
-Ask questions about the building byelaw document.
-
-The assistant searches the indexed document first and
-then uses the retrieved passages to generate an answer.
-
-If sufficient information cannot be found in the
-document, the assistant will say so instead of
-answering from general knowledge.
-"""
-)
-
-
-# =========================================================
 # API KEY
 # =========================================================
 
 api_key = get_groq_api_key()
+
 
 if not api_key:
 
@@ -103,13 +109,14 @@ if not api_key:
 For Streamlit Cloud:
 
 1. Open your app.
-2. Click Manage app.
-3. Open Settings / Secrets.
+2. Click "Manage app".
+3. Open Settings → Secrets.
 4. Add:
 
 GROQ_API_KEY = "your-groq-api-key"
 
-Then save and reboot the app.
+5. Save.
+6. Reboot the app.
 """
     )
 
@@ -126,7 +133,7 @@ client = Groq(
 
 
 # =========================================================
-# LOAD INDEX
+# LOAD DOCUMENT INDEX
 # =========================================================
 
 try:
@@ -147,6 +154,40 @@ except Exception as error:
 
 
 # =========================================================
+# SESSION STATE
+# =========================================================
+
+if "messages" not in st.session_state:
+
+    st.session_state.messages = []
+
+
+# =========================================================
+# HEADER
+# =========================================================
+
+st.markdown(
+    """
+<div class="main-title">
+🏗️ DHA Building Byelaw AI Assistant
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+<div class="subtitle">
+Ask questions about the DHA building byelaw document.
+The assistant searches the indexed document first and
+then uses Groq to generate a grounded answer.
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
 # SIDEBAR
 # =========================================================
 
@@ -163,7 +204,12 @@ with st.sidebar:
 
     chunk_count = index.get(
         "chunk_count",
-        0,
+        len(
+            index.get(
+                "chunks",
+                [],
+            )
+        ),
     )
 
     st.write(
@@ -177,20 +223,27 @@ with st.sidebar:
     st.divider()
 
     st.header(
-        "⚙️ RAG Settings"
+        "🤖 AI Settings"
     )
 
     st.write(
-        f"**Top K:** {TOP_K}"
+        f"**LLM:** `{LLM_MODEL}`"
+    )
+
+    st.write(
+        f"**Top K:** `{TOP_K}`"
     )
 
     st.write(
         "**Similarity threshold:** "
-        f"{SIMILARITY_THRESHOLD}"
+        f"`{SIMILARITY_THRESHOLD}`"
     )
 
-    st.write(
-        f"**LLM:** {LLM_MODEL}"
+    st.divider()
+
+    show_retrieval = st.checkbox(
+        "🔍 Show retrieved passages",
+        value=False,
     )
 
     st.divider()
@@ -200,181 +253,370 @@ with st.sidebar:
         "building byelaw document."
     )
 
+    st.divider()
+
+    if st.button(
+        "🗑️ Clear conversation",
+        use_container_width=True,
+    ):
+
+        st.session_state.messages = []
+
+        st.rerun()
+
 
 # =========================================================
-# QUESTION
+# WELCOME MESSAGE
 # =========================================================
 
-st.subheader(
-    "Ask a question"
+if not st.session_state.messages:
+
+    st.info(
+        """
+👋 **Welcome to the DHA Building Byelaw Assistant.**
+
+You can ask questions such as:
+
+- What is the minimum staircase width?
+- What are the parking requirements?
+- What is the required setback?
+- What are the height restrictions?
+- What does the document say about residential buildings?
+
+The assistant will only answer when sufficient
+information is available in the indexed document.
+"""
+    )
+
+
+# =========================================================
+# DISPLAY EXISTING CHAT
+# =========================================================
+
+for message in st.session_state.messages:
+
+    role = message.get(
+        "role"
+    )
+
+    content = message.get(
+        "content",
+        "",
+    )
+
+    if role not in {
+        "user",
+        "assistant",
+    }:
+
+        continue
+
+    with st.chat_message(
+        role
+    ):
+
+        st.markdown(
+            content
+        )
+
+        # -------------------------------------------------
+        # Assistant information
+        # -------------------------------------------------
+
+        if role == "assistant":
+
+            sources = message.get(
+                "sources",
+                [],
+            )
+
+            if sources:
+
+                source_text = ", ".join(
+                    [
+                        f"Page {page}"
+                        for page in sources
+                    ]
+                )
+
+                st.caption(
+                    f"📚 Sources: {source_text}"
+                )
+
+            # ---------------------------------------------
+            # Retrieval information
+            # ---------------------------------------------
+
+            if show_retrieval:
+
+                similarity = message.get(
+                    "best_similarity"
+                )
+
+                if similarity is not None:
+
+                    st.caption(
+                        "Best retrieval similarity: "
+                        f"{similarity:.3f}"
+                    )
+
+                retrieved_chunks = message.get(
+                    "retrieved_chunks",
+                    [],
+                )
+
+                if retrieved_chunks:
+
+                    with st.expander(
+                        "🔍 Retrieved document passages"
+                    ):
+
+                        for number, chunk in enumerate(
+                            retrieved_chunks,
+                            start=1,
+                        ):
+
+                            page = chunk.get(
+                                "page",
+                                "Unknown",
+                            )
+
+                            similarity = chunk.get(
+                                "similarity",
+                                0.0,
+                            )
+
+                            text = chunk.get(
+                                "text",
+                                "",
+                            )
+
+                            st.markdown(
+                                f"**Passage {number}**  \n"
+                                f"Page: **{page}**  \n"
+                                f"Similarity: **{similarity:.3f}**"
+                            )
+
+                            st.write(
+                                text
+                            )
+
+                            st.divider()
+
+
+# =========================================================
+# CHAT INPUT
+# =========================================================
+
+question = st.chat_input(
+    "Ask a question about the building byelaw..."
 )
 
-question = st.text_area(
-    "Your question",
-    placeholder=(
-        "Example: What is the minimum required "
-        "width of a staircase?"
-    ),
-    height=120,
-    label_visibility="collapsed",
-)
-
 
 # =========================================================
-# ASK BUTTON
+# PROCESS QUESTION
 # =========================================================
 
-ask_button = st.button(
-    "🔎 Ask Byelaw",
-    type="primary",
-    use_container_width=True,
-)
-
-
-if ask_button:
+if question:
 
     question = question.strip()
 
     if not question:
 
-        st.warning(
-            "Please enter a question."
-        )
-
         st.stop()
 
     # -----------------------------------------------------
-    # RUN RAG
+    # DISPLAY USER QUESTION
     # -----------------------------------------------------
 
-    with st.spinner(
-        "Searching the building byelaw..."
+    with st.chat_message(
+        "user"
     ):
 
-        try:
-
-            result = ask_question(
-                client=client,
-                question=question,
-                index=index,
-            )
-
-        except Exception as error:
-
-            st.error(
-                "An error occurred while processing "
-                "your question."
-            )
-
-            st.code(
-                str(error)
-            )
-
-            st.stop()
-
-    # -----------------------------------------------------
-    # ANSWER
-    # -----------------------------------------------------
-
-    st.subheader(
-        "Answer"
-    )
-
-    st.markdown(
-        result["answer"]
-    )
-
-    # -----------------------------------------------------
-    # SOURCES
-    # -----------------------------------------------------
-
-    sources = result.get(
-        "sources",
-        [],
-    )
-
-    if sources:
-
-        st.subheader(
-            "📚 Source Pages"
-        )
-
-        source_text = ", ".join(
-            [
-                f"Page {page}"
-                for page in sources
-            ]
-        )
-
-        st.write(
-            source_text
+        st.markdown(
+            question
         )
 
     # -----------------------------------------------------
-    # RETRIEVAL SCORE
+    # SAVE USER QUESTION
     # -----------------------------------------------------
 
-    best_similarity = result.get(
-        "best_similarity"
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": question,
+        }
     )
 
-    if best_similarity is not None:
-
-        st.caption(
-            "Best retrieval similarity: "
-            f"{best_similarity:.3f}"
-        )
-
     # -----------------------------------------------------
-    # RETRIEVED PASSAGES
+    # PREVIOUS CONVERSATION
     # -----------------------------------------------------
 
-    retrieved_chunks = result.get(
-        "retrieved_chunks",
-        [],
+    history_for_rag = (
+        st.session_state.messages[:-1]
     )
 
-    if retrieved_chunks:
+    # -----------------------------------------------------
+    # GENERATE ANSWER
+    # -----------------------------------------------------
 
-        with st.expander(
-            "🔍 View retrieved document passages"
+    with st.chat_message(
+        "assistant"
+    ):
+
+        with st.spinner(
+            "🔎 Searching the byelaw and generating answer..."
         ):
 
-            for number, chunk in enumerate(
-                retrieved_chunks,
-                start=1,
+            try:
+
+                result = ask_question(
+                    client=client,
+                    question=question,
+                    index=index,
+                    conversation_history=history_for_rag,
+                )
+
+            except Exception as error:
+
+                st.error(
+                    "I couldn't process your question."
+                )
+
+                st.exception(
+                    error
+                )
+
+                st.stop()
+
+        # -------------------------------------------------
+        # ANSWER
+        # -------------------------------------------------
+
+        answer = result.get(
+            "answer",
+            "I could not generate an answer.",
+        )
+
+        st.markdown(
+            answer
+        )
+
+        # -------------------------------------------------
+        # SOURCES
+        # -------------------------------------------------
+
+        sources = result.get(
+            "sources",
+            [],
+        )
+
+        if sources:
+
+            source_text = ", ".join(
+                [
+                    f"Page {page}"
+                    for page in sources
+                ]
+            )
+
+            st.caption(
+                f"📚 Sources: {source_text}"
+            )
+
+        # -------------------------------------------------
+        # RETRIEVAL DEBUGGING
+        # -------------------------------------------------
+
+        best_similarity = result.get(
+            "best_similarity"
+        )
+
+        if (
+            show_retrieval
+            and best_similarity is not None
+        ):
+
+            st.caption(
+                "Best retrieval similarity: "
+                f"{best_similarity:.3f}"
+            )
+
+        retrieved_chunks = result.get(
+            "retrieved_chunks",
+            [],
+        )
+
+        if (
+            show_retrieval
+            and retrieved_chunks
+        ):
+
+            with st.expander(
+                "🔍 Retrieved document passages"
             ):
 
-                page = chunk.get(
-                    "page",
-                    "Unknown",
-                )
+                for number, chunk in enumerate(
+                    retrieved_chunks,
+                    start=1,
+                ):
 
-                similarity = chunk.get(
-                    "similarity",
-                    0.0,
-                )
+                    page = chunk.get(
+                        "page",
+                        "Unknown",
+                    )
 
-                text = chunk.get(
-                    "text",
-                    "",
-                )
+                    similarity = chunk.get(
+                        "similarity",
+                        0.0,
+                    )
 
-                st.markdown(
-                    f"### Passage {number}"
-                )
+                    text = chunk.get(
+                        "text",
+                        "",
+                    )
 
-                st.write(
-                    f"**PDF Page:** {page}"
-                )
+                    st.markdown(
+                        f"**Passage {number}**  \n"
+                        f"Page: **{page}**  \n"
+                        f"Similarity: **{similarity:.3f}**"
+                    )
 
-                st.write(
-                    f"**Similarity:** "
-                    f"{similarity:.3f}"
-                )
+                    st.write(
+                        text
+                    )
 
-                st.write(
-                    text
-                )
+                    st.divider()
 
-                st.divider()
+    # -----------------------------------------------------
+    # SAVE ASSISTANT ANSWER
+    # -----------------------------------------------------
+
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": answer,
+            "sources": sources,
+            "best_similarity": best_similarity,
+            "retrieved_chunks": retrieved_chunks,
+        }
+    )
+
+    # -----------------------------------------------------
+    # LIMIT CHAT HISTORY
+    # -----------------------------------------------------
+
+    max_messages = max(
+        2,
+        MAX_HISTORY_MESSAGES * 2,
+    )
+
+    if len(
+        st.session_state.messages
+    ) > max_messages:
+
+        st.session_state.messages = (
+            st.session_state.messages[
+                -max_messages:
+            ]
+        )
