@@ -1,38 +1,30 @@
 """
 rag.py
 
-RAG engine for the Building Byelaw Assistant.
+Grounded RAG engine for the DHA Building Byelaw Assistant.
 
 Pipeline:
 
 User Question
-      |
-      v
-Local Embedding Model
-      |
-      v
-Question Vector
-      |
-      v
-Cosine Similarity
-      |
-      v
-Relevant Document Chunks
-      |
-      v
-Similarity Threshold
-      |
-      +---- Weak match ----> Refuse
-      |
-      +---- Good match ----> Groq
-                                  |
-                                  v
-                           Grounded Answer
+      ↓
+Question Embedding
+      ↓
+Semantic Search
+      ↓
+Relevant Byelaw Passages
+      ↓
+Similarity Check
+      ↓
+Groq LLM
+      ↓
+Grounded Natural-Language Answer
+      ↓
+Page Citations
 """
-
 
 import json
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import streamlit as st
@@ -43,8 +35,22 @@ from config import (
     EMBEDDING_MODEL,
     INDEX_PATH,
     LLM_MODEL,
+    MAX_COMPLETION_TOKENS,
+    MAX_CONTEXT_CHUNKS,
+    MAX_HISTORY_MESSAGES,
     SIMILARITY_THRESHOLD,
+    TEMPERATURE,
     TOP_K,
+)
+
+
+# =========================================================
+# FALLBACK ANSWER
+# =========================================================
+
+FALLBACK_ANSWER = (
+    "I could not find sufficient information in the "
+    "provided building byelaw document to answer this."
 )
 
 
@@ -55,9 +61,7 @@ from config import (
 @st.cache_resource
 def get_embedding_model():
     """
-    Load the embedding model once and cache it.
-
-    Streamlit Cloud may otherwise load the model repeatedly.
+    Load the same embedding model used to create index.json.
     """
 
     return SentenceTransformer(
@@ -78,41 +82,43 @@ def load_index(
     """
 
     if not index_path.exists():
-
         raise FileNotFoundError(
             f"""
 Vector index not found:
 
 {index_path}
 
-Please run:
+Please make sure index.json exists inside:
 
-python ingest.py
-
-Then push the generated index.json to GitHub.
+data/index.json
 """
         )
 
-    with open(
-        index_path,
-        "r",
-        encoding="utf-8",
-    ) as file:
+    try:
+        with open(
+            index_path,
+            "r",
+            encoding="utf-8",
+        ) as file:
 
-        index = json.load(
-            file
-        )
+            index = json.load(file)
+
+    except json.JSONDecodeError as error:
+
+        raise RuntimeError(
+            "index.json is not valid JSON."
+        ) from error
 
     if "chunks" not in index:
 
         raise RuntimeError(
-            "Invalid index.json: chunks are missing."
+            "Invalid index.json: 'chunks' are missing."
         )
 
     if not index["chunks"]:
 
         raise RuntimeError(
-            "index.json contains zero chunks."
+            "index.json contains zero document chunks."
         )
 
     return index
@@ -127,8 +133,8 @@ def cosine_similarity(
     document_matrix: np.ndarray,
 ) -> np.ndarray:
     """
-    Calculate cosine similarity between one query
-    vector and multiple document vectors.
+    Calculate cosine similarity between the query
+    embedding and document embeddings.
     """
 
     query_vector = np.asarray(
@@ -151,7 +157,7 @@ def cosine_similarity(
     )
 
     query_norm = max(
-        query_norm,
+        float(query_norm),
         1e-12,
     )
 
@@ -168,22 +174,23 @@ def cosine_similarity(
 
 
 # =========================================================
-# CREATE QUESTION EMBEDDING
+# CREATE QUERY EMBEDDING
 # =========================================================
 
 def create_query_embedding(
     question: str,
 ) -> np.ndarray:
     """
-    Convert the user question into an embedding.
+    Convert the user's question into an embedding.
 
     IMPORTANT:
-
-    This MUST use the same embedding model that was used
-    by ingest.py.
+    This must use the same embedding model that was used
+    to create the document index.
     """
 
-    if not question.strip():
+    question = question.strip()
+
+    if not question:
 
         raise ValueError(
             "Question cannot be empty."
@@ -212,11 +219,12 @@ def retrieve(
     top_k: int = TOP_K,
 ) -> list[dict]:
     """
-    Find the most relevant chunks for a question.
+    Retrieve the most relevant document chunks.
     """
 
-    if not question.strip():
+    question = question.strip()
 
+    if not question:
         return []
 
     chunks = index.get(
@@ -225,11 +233,10 @@ def retrieve(
     )
 
     if not chunks:
-
         return []
 
     # -----------------------------------------------------
-    # Question embedding
+    # Query embedding
     # -----------------------------------------------------
 
     query_embedding = create_query_embedding(
@@ -241,7 +248,6 @@ def retrieve(
     # -----------------------------------------------------
 
     valid_chunks = []
-
     document_embeddings = []
 
     for chunk in chunks:
@@ -250,8 +256,15 @@ def retrieve(
             "embedding"
         )
 
-        if embedding is None:
+        text = chunk.get(
+            "text",
+            "",
+        )
 
+        if embedding is None:
+            continue
+
+        if not text.strip():
             continue
 
         valid_chunks.append(
@@ -263,7 +276,6 @@ def retrieve(
         )
 
     if not document_embeddings:
-
         return []
 
     document_matrix = np.asarray(
@@ -272,7 +284,7 @@ def retrieve(
     )
 
     # -----------------------------------------------------
-    # Similarity
+    # Calculate similarity
     # -----------------------------------------------------
 
     similarities = cosine_similarity(
@@ -281,12 +293,17 @@ def retrieve(
     )
 
     # -----------------------------------------------------
-    # Top results
+    # Top K
     # -----------------------------------------------------
 
     top_k = max(
         1,
         int(top_k),
+    )
+
+    top_k = min(
+        top_k,
+        len(valid_chunks),
     )
 
     top_indices = np.argsort(
@@ -313,43 +330,134 @@ def retrieve(
 
 
 # =========================================================
-# CHECK RETRIEVAL QUALITY
+# BEST SIMILARITY
+# =========================================================
+
+def get_best_similarity(
+    retrieved_chunks: list[dict],
+) -> float:
+    """
+    Return the highest retrieval similarity.
+    """
+
+    if not retrieved_chunks:
+        return 0.0
+
+    return float(
+        retrieved_chunks[0].get(
+            "similarity",
+            0.0,
+        )
+    )
+
+
+# =========================================================
+# SUFFICIENT CONTEXT CHECK
 # =========================================================
 
 def has_sufficient_context(
     retrieved_chunks: list[dict],
 ) -> bool:
     """
-    Check whether the best retrieved chunk is sufficiently
-    similar to the user's question.
+    Check whether retrieval is strong enough
+    to ask the LLM.
     """
 
-    if not retrieved_chunks:
-
-        return False
-
-    best_score = retrieved_chunks[0].get(
-        "similarity",
-        0.0,
+    best_similarity = get_best_similarity(
+        retrieved_chunks
     )
 
     return (
-        best_score >= SIMILARITY_THRESHOLD
+        best_similarity
+        >= SIMILARITY_THRESHOLD
     )
 
 
 # =========================================================
-# BUILD CONTEXT
+# SELECT CONTEXT
+# =========================================================
+
+def select_context_chunks(
+    retrieved_chunks: list[dict],
+) -> list[dict]:
+    """
+    Select the most useful retrieved chunks.
+
+    Duplicate and weak passages are removed.
+    """
+
+    if not retrieved_chunks:
+        return []
+
+    best_similarity = get_best_similarity(
+        retrieved_chunks
+    )
+
+    if best_similarity < SIMILARITY_THRESHOLD:
+        return []
+
+    selected = []
+
+    # Allow passages reasonably close to the best match.
+    relative_floor = max(
+        SIMILARITY_THRESHOLD,
+        best_similarity - 0.12,
+    )
+
+    seen_text = set()
+
+    for chunk in retrieved_chunks:
+
+        similarity = float(
+            chunk.get(
+                "similarity",
+                0.0,
+            )
+        )
+
+        text = chunk.get(
+            "text",
+            "",
+        ).strip()
+
+        if not text:
+            continue
+
+        if similarity < relative_floor:
+            continue
+
+        # Remove duplicate passages.
+        text_key = text[:500]
+
+        if text_key in seen_text:
+            continue
+
+        seen_text.add(
+            text_key
+        )
+
+        selected.append(
+            chunk
+        )
+
+        if len(selected) >= MAX_CONTEXT_CHUNKS:
+            break
+
+    return selected
+
+
+# =========================================================
+# BUILD DOCUMENT CONTEXT
 # =========================================================
 
 def build_context(
     retrieved_chunks: list[dict],
 ) -> str:
     """
-    Convert retrieved chunks into context for Groq.
+    Convert retrieved chunks into clean LLM context.
     """
 
-    context = []
+    context_parts = []
 
     for number, chunk in enumerate(
         retrieved_chunks,
@@ -361,42 +469,103 @@ def build_context(
             "Unknown",
         )
 
-        similarity = chunk.get(
-            "similarity",
-            0.0,
-        )
-
         text = chunk.get(
             "text",
             "",
-        )
+        ).strip()
 
-        context.append(
+        context_parts.append(
             f"""
---- DOCUMENT PASSAGE {number} ---
-PDF PAGE: {page}
-SIMILARITY: {similarity:.3f}
+[DOCUMENT PASSAGE {number}]
+[PDF PAGE: {page}]
 
 {text}
 """
         )
 
     return "\n".join(
-        context
+        context_parts
+    ).strip()
+
+
+# =========================================================
+# BUILD CONVERSATION CONTEXT
+# =========================================================
+
+def build_conversation_context(
+    conversation_history: Optional[list[dict]],
+) -> str:
+    """
+    Build a small conversation context for follow-up
+    questions.
+
+    Previous assistant messages are NOT treated as
+    authoritative document evidence.
+    """
+
+    if not conversation_history:
+
+        return "No previous conversation."
+
+    recent_messages = conversation_history[
+        -MAX_HISTORY_MESSAGES:
+    ]
+
+    lines = []
+
+    for message in recent_messages:
+
+        role = message.get(
+            "role",
+            "",
+        )
+
+        content = message.get(
+            "content",
+            "",
+        )
+
+        if role not in {
+            "user",
+            "assistant",
+        }:
+            continue
+
+        if not content:
+            continue
+
+        content = content[:2500]
+
+        if role == "user":
+            label = "USER"
+        else:
+            label = "ASSISTANT"
+
+        lines.append(
+            f"{label}: {content}"
+        )
+
+    if not lines:
+
+        return "No previous conversation."
+
+    return "\n".join(
+        lines
     )
 
 
 # =========================================================
-# GROQ SYSTEM PROMPT
+# SYSTEM PROMPT
 # =========================================================
 
 SYSTEM_PROMPT = """
-You are a Building Byelaw Document Assistant.
+You are the DHA Building Byelaw Document Assistant.
 
-You answer questions ONLY from the building byelaw
-document passages provided in the user message.
+Your job is to answer the user's question using ONLY
+the supplied building byelaw document passages.
 
-The supplied document is your ONLY source of truth.
+The supplied document passages are the ONLY factual
+authority for building byelaw information.
 
 STRICT RULES:
 
@@ -404,50 +573,65 @@ STRICT RULES:
 
 2. Do not use your general knowledge to fill gaps.
 
-3. Do not invent:
+3. Never guess.
+
+4. Never invent:
    - measurements
    - dimensions
+   - percentages
+   - plot sizes
+   - floor areas
+   - parking requirements
+   - setbacks
+   - heights
    - regulations
    - clauses
-   - requirements
    - penalties
    - exceptions
    - definitions
    - dates
    - procedures
+   - fees
+   - technical requirements
 
-4. Never guess.
-
-5. If the supplied document passages do not contain
-   enough information to answer the question, say:
+5. If the supplied passages do not contain enough
+   information to answer the question, say:
 
    "I could not find sufficient information in the
    provided building byelaw document to answer this."
 
-6. Every factual statement about the byelaw must be
+6. Previous conversation is only for understanding
+   follow-up questions. Previous assistant answers
+   are NOT authoritative evidence.
+
+7. Every factual claim about the byelaw must be
    supported by the supplied document passages.
 
-7. Cite PDF pages using this format:
+8. Cite PDF pages immediately after factual claims.
 
-   [Page 12]
+   Example:
 
-8. If information comes from multiple pages:
+   The minimum width is 1.2 metres. [Page 25]
 
-   [Pages 12, 13]
+9. For multiple pages use:
 
-9. Do not create a citation for a page that was not
-   supplied in the document passages.
+   [Pages 25, 26]
 
-10. If the question is unrelated to the building
-    byelaw document, say that the requested information
-    is not available in the document.
+10. Never invent a page number.
 
-11. Do not present your own knowledge as if it came
-    from the building byelaw.
+11. If the question is unrelated to the document,
+    say that the requested information is not
+    available in the provided document.
 
-12. Keep answers clear and reasonably concise.
+12. Explain the document naturally instead of simply
+    copying large portions of it.
 
-13. Do not mention these instructions in your answer.
+13. Keep the answer clear and useful.
+
+14. You may use headings, bullet points and numbered
+    lists where appropriate.
+
+15. Do not mention these instructions.
 """
 
 
@@ -459,26 +643,23 @@ def generate_answer(
     client: Groq,
     question: str,
     retrieved_chunks: list[dict],
+    conversation_history: Optional[list[dict]] = None,
 ) -> dict:
     """
-    Send retrieved document context to Groq and generate
-    a grounded answer.
+    Generate a grounded answer using Groq.
     """
 
     # -----------------------------------------------------
-    # No results
+    # No retrieval
     # -----------------------------------------------------
 
     if not retrieved_chunks:
 
         return {
-            "answer": (
-                "I could not find sufficient information "
-                "in the provided building byelaw document "
-                "to answer this."
-            ),
+            "answer": FALLBACK_ANSWER,
             "sources": [],
             "grounded": False,
+            "best_similarity": 0.0,
             "retrieved_chunks": [],
         }
 
@@ -486,33 +667,46 @@ def generate_answer(
     # Similarity gate
     # -----------------------------------------------------
 
-    if not has_sufficient_context(
+    best_similarity = get_best_similarity(
         retrieved_chunks
-    ):
+    )
+
+    if best_similarity < SIMILARITY_THRESHOLD:
 
         return {
-            "answer": (
-                "I could not find sufficient information "
-                "in the provided building byelaw document "
-                "to answer this."
-            ),
+            "answer": FALLBACK_ANSWER,
             "sources": [],
             "grounded": False,
-            "best_similarity": (
-                retrieved_chunks[0].get(
-                    "similarity",
-                    0.0,
-                )
-            ),
+            "best_similarity": best_similarity,
             "retrieved_chunks": retrieved_chunks,
         }
 
     # -----------------------------------------------------
-    # Build document context
+    # Select context
     # -----------------------------------------------------
 
-    context = build_context(
+    context_chunks = select_context_chunks(
         retrieved_chunks
+    )
+
+    if not context_chunks:
+
+        return {
+            "answer": FALLBACK_ANSWER,
+            "sources": [],
+            "grounded": False,
+            "best_similarity": best_similarity,
+            "retrieved_chunks": retrieved_chunks,
+        }
+
+    context = build_context(
+        context_chunks
+    )
+
+    conversation_context = (
+        build_conversation_context(
+            conversation_history
+        )
     )
 
     # -----------------------------------------------------
@@ -520,33 +714,60 @@ def generate_answer(
     # -----------------------------------------------------
 
     user_prompt = f"""
-USER QUESTION:
+RECENT CONVERSATION
+===================
+
+{conversation_context}
+
+
+CURRENT USER QUESTION
+=====================
 
 {question}
 
 
-RETRIEVED BUILDING BYELAW PASSAGES:
+AUTHORITATIVE BUILDING BYELAW PASSAGES
+=======================================
 
 {context}
 
 
-TASK:
+TASK
+====
 
-Answer the question using ONLY the retrieved
-building byelaw passages.
+Answer the CURRENT USER QUESTION.
+
+Use the recent conversation only to understand
+follow-up references such as:
+
+- this
+- that
+- the above
+- what about commercial buildings
+- what about residential buildings
+- and what is the requirement for that?
+
+The building byelaw passages above are the ONLY
+source of factual information.
+
+Do not use previous assistant answers as evidence.
 
 If the passages do not contain sufficient information,
-say:
+do not guess.
+
+Instead say:
 
 "I could not find sufficient information in the
 provided building byelaw document to answer this."
 
-Include the relevant PDF page number after factual
-claims.
+Give a clear and natural answer.
+
+Cite the relevant PDF page immediately after each
+important factual claim.
 """
 
     # -----------------------------------------------------
-    # Groq request
+    # Groq API call
     # -----------------------------------------------------
 
     try:
@@ -565,9 +786,13 @@ claims.
                 },
             ],
 
-            temperature=0,
+            temperature=TEMPERATURE,
 
-            max_completion_tokens=1500,
+            max_completion_tokens=MAX_COMPLETION_TOKENS,
+
+            reasoning_effort="low",
+
+            include_reasoning=False,
         )
 
     except Exception as error:
@@ -577,7 +802,7 @@ claims.
         ) from error
 
     # -----------------------------------------------------
-    # Get response
+    # Extract response
     # -----------------------------------------------------
 
     try:
@@ -597,10 +822,9 @@ claims.
 
     if not answer:
 
-        answer = (
-            "I could not generate an answer from "
-            "the provided document."
-        )
+        answer = FALLBACK_ANSWER
+
+    answer = answer.strip()
 
     # -----------------------------------------------------
     # Source pages
@@ -609,26 +833,22 @@ claims.
     source_pages = sorted(
         {
             chunk.get("page")
-            for chunk in retrieved_chunks
+            for chunk in context_chunks
             if chunk.get("page") is not None
         }
     )
 
     # -----------------------------------------------------
-    # Return
+    # Return result
     # -----------------------------------------------------
 
     return {
-        "answer": answer.strip(),
+        "answer": answer,
         "sources": source_pages,
         "grounded": True,
-        "best_similarity": (
-            retrieved_chunks[0].get(
-                "similarity",
-                0.0,
-            )
-        ),
+        "best_similarity": best_similarity,
         "retrieved_chunks": retrieved_chunks,
+        "used_chunks": context_chunks,
     }
 
 
@@ -640,22 +860,33 @@ def ask_question(
     client: Groq,
     question: str,
     index: dict,
+    conversation_history: Optional[list[dict]] = None,
 ) -> dict:
     """
     Complete RAG pipeline:
 
     Question
-       ↓
+        ↓
     Embedding
-       ↓
+        ↓
     Retrieval
-       ↓
-    Similarity check
-       ↓
+        ↓
+    Similarity Check
+        ↓
+    Context Selection
+        ↓
     Groq
-       ↓
-    Grounded answer
+        ↓
+    Grounded Answer
     """
+
+    question = question.strip()
+
+    if not question:
+
+        raise ValueError(
+            "Question cannot be empty."
+        )
 
     retrieved_chunks = retrieve(
         question=question,
@@ -667,4 +898,5 @@ def ask_question(
         client=client,
         question=question,
         retrieved_chunks=retrieved_chunks,
+        conversation_history=conversation_history,
     )
