@@ -772,28 +772,25 @@ important factual claim.
 
     try:
 
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
+response = client.chat.completions.create(
+    model=LLM_MODEL,
 
-            messages=[
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
-            ],
+    messages=[
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        },
+        {
+            "role": "user",
+            "content": user_prompt,
+        },
+    ],
 
-            temperature=TEMPERATURE,
+    temperature=TEMPERATURE,
 
-            max_completion_tokens=MAX_COMPLETION_TOKENS,
+    max_completion_tokens=MAX_COMPLETION_TOKENS,
+)
 
-            reasoning_effort="low",
-
-            include_reasoning=False,
-        )
 
     except Exception as error:
 
