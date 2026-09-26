@@ -5,7 +5,7 @@ Streamlit frontend for the Building Byelaw RAG application.
 """
 
 import streamlit as st
-from openai import OpenAI
+from groq import Groq
 
 from config import (
     EMBEDDING_MODEL,
@@ -78,8 +78,8 @@ the application's Secrets settings.
 # Load OpenAI client
 # ---------------------------------------------------------
 
-client = OpenAI(
-    api_key=OPENAI_API_KEY
+client = Groq(
+    api_key=GROQ_API_KEY
 )
 
 
