@@ -1,7 +1,23 @@
 """
 rag.py
 
-RAG engine for the DHA Building Byelaw Assistant.
+RAG engine for the DHA Building Byelaw AI Assistant.
+
+Pipeline:
+
+User Question
+      ↓
+Embedding
+      ↓
+Semantic Retrieval
+      ↓
+Relevant Byelaw Context
+      ↓
+Groq LLM
+      ↓
+Natural-language grounded answer
+      ↓
+Page citations
 """
 
 import json
@@ -26,7 +42,7 @@ from config import (
 
 
 # =========================================================
-# FALLBACK ANSWER
+# FALLBACK
 # =========================================================
 
 FALLBACK_ANSWER = (
@@ -41,6 +57,7 @@ FALLBACK_ANSWER = (
 
 @st.cache_resource
 def get_embedding_model():
+
     return SentenceTransformer(
         EMBEDDING_MODEL
     )
@@ -51,8 +68,12 @@ def get_embedding_model():
 # =========================================================
 
 @st.cache_data
-def load_index(index_path: Path = INDEX_PATH):
+def load_index(
+    index_path: Path = INDEX_PATH,
+):
+
     if not index_path.exists():
+
         raise FileNotFoundError(
             f"Vector index not found:\n\n"
             f"{index_path}\n\n"
@@ -64,14 +85,17 @@ def load_index(index_path: Path = INDEX_PATH):
         "r",
         encoding="utf-8",
     ) as file:
+
         index = json.load(file)
 
     if "chunks" not in index:
+
         raise RuntimeError(
             "Invalid index.json: chunks are missing."
         )
 
     if not index["chunks"]:
+
         raise RuntimeError(
             "index.json contains zero chunks."
         )
@@ -87,6 +111,7 @@ def cosine_similarity(
     query_vector,
     document_matrix,
 ):
+
     query_vector = np.asarray(
         query_vector,
         dtype=np.float32,
@@ -124,13 +149,17 @@ def cosine_similarity(
 
 
 # =========================================================
-# CREATE QUERY EMBEDDING
+# QUERY EMBEDDING
 # =========================================================
 
-def create_query_embedding(question):
+def create_query_embedding(
+    question,
+):
+
     question = question.strip()
 
     if not question:
+
         raise ValueError(
             "Question cannot be empty."
         )
@@ -149,7 +178,7 @@ def create_query_embedding(question):
 
 
 # =========================================================
-# RETRIEVE DOCUMENT CHUNKS
+# RETRIEVAL
 # =========================================================
 
 def retrieve(
@@ -157,9 +186,11 @@ def retrieve(
     index,
     top_k=TOP_K,
 ):
+
     question = question.strip()
 
     if not question:
+
         return []
 
     chunks = index.get(
@@ -168,6 +199,7 @@ def retrieve(
     )
 
     if not chunks:
+
         return []
 
     query_embedding = create_query_embedding(
@@ -175,6 +207,7 @@ def retrieve(
     )
 
     valid_chunks = []
+
     document_embeddings = []
 
     for chunk in chunks:
@@ -194,10 +227,16 @@ def retrieve(
         if not text.strip():
             continue
 
-        valid_chunks.append(chunk)
-        document_embeddings.append(embedding)
+        valid_chunks.append(
+            chunk
+        )
+
+        document_embeddings.append(
+            embedding
+        )
 
     if not document_embeddings:
+
         return []
 
     document_matrix = np.asarray(
@@ -236,22 +275,26 @@ def retrieve(
             similarities[position]
         )
 
-        results.append(result)
+        results.append(
+            result
+        )
 
     return results
 
 
 # =========================================================
-# CHECK CONTEXT QUALITY
+# CONTEXT QUALITY
 # =========================================================
 
 def has_sufficient_context(
     retrieved_chunks,
 ):
+
     if not retrieved_chunks:
+
         return False
 
-    best_similarity = float(
+    best_score = float(
         retrieved_chunks[0].get(
             "similarity",
             0.0,
@@ -259,19 +302,20 @@ def has_sufficient_context(
     )
 
     return (
-        best_similarity
+        best_score
         >= SIMILARITY_THRESHOLD
     )
 
 
 # =========================================================
-# BUILD DOCUMENT CONTEXT
+# BUILD CONTEXT
 # =========================================================
 
 def build_context(
     retrieved_chunks,
 ):
-    context_parts = []
+
+    context = []
 
     for number, chunk in enumerate(
         retrieved_chunks[:MAX_CONTEXT_CHUNKS],
@@ -288,10 +332,9 @@ def build_context(
             "",
         ).strip()
 
-        context_parts.append(
+        context.append(
             f"""
-DOCUMENT PASSAGE {number}
-
+SOURCE {number}
 PDF PAGE: {page}
 
 {text}
@@ -299,27 +342,29 @@ PDF PAGE: {page}
         )
 
     return "\n".join(
-        context_parts
+        context
     )
 
 
 # =========================================================
-# CONVERSATION HISTORY
+# CHAT HISTORY
 # =========================================================
 
 def build_history(
     conversation_history,
 ):
+
     if not conversation_history:
+
         return "No previous conversation."
 
-    recent = conversation_history[
+    recent_messages = conversation_history[
         -MAX_HISTORY_MESSAGES:
     ]
 
-    history_parts = []
+    history = []
 
-    for message in recent:
+    for message in recent_messages:
 
         role = message.get(
             "role",
@@ -331,30 +376,28 @@ def build_history(
             "",
         )
 
-        if role not in {
-            "user",
-            "assistant",
-        }:
-            continue
-
         if not content:
+
             continue
 
-        label = (
-            "USER"
-            if role == "user"
-            else "ASSISTANT"
-        )
+        if role == "user":
 
-        history_parts.append(
-            f"{label}: {content}"
-        )
+            history.append(
+                f"User: {content}"
+            )
 
-    if not history_parts:
+        elif role == "assistant":
+
+            history.append(
+                f"Assistant: {content}"
+            )
+
+    if not history:
+
         return "No previous conversation."
 
     return "\n".join(
-        history_parts
+        history
     )
 
 
@@ -363,63 +406,163 @@ def build_history(
 # =========================================================
 
 SYSTEM_PROMPT = """
-You are an AI assistant for a DHA Building Byelaw
-document.
+You are an intelligent AI assistant specializing in
+building byelaws.
 
-Your job is to answer questions using ONLY the
-building byelaw passages supplied to you.
+Your task is to answer the user's question by
+UNDERSTANDING and SYNTHESIZING the supplied building
+byelaw passages.
 
-The supplied passages are your only source of truth.
+You are NOT a document copier.
 
-IMPORTANT RULES:
+You must read the retrieved passages, understand them,
+and then explain the relevant information naturally,
+similar to how a high-quality AI assistant would answer.
 
-1. Do not use outside knowledge.
+=========================================================
+CORE BEHAVIOUR
+=========================================================
 
-2. Do not answer from your general knowledge.
+1. Use ONLY the supplied building byelaw passages
+   as factual evidence.
 
-3. Never guess.
+2. Do NOT use outside knowledge for building byelaw
+   requirements.
 
-4. Never invent regulations, measurements,
-   dimensions, percentages, clauses, penalties,
-   exceptions, dates, procedures, fees or requirements.
+3. Do NOT simply copy and paste the retrieved text.
 
-5. If the supplied passages do not contain enough
-   information, respond exactly with:
+4. Rewrite the information into a clear, natural,
+   easy-to-understand answer.
+
+5. Combine information from multiple passages when
+   necessary.
+
+6. Remove unnecessary repetition.
+
+7. Answer the actual question directly.
+
+8. If the user asks "what is", explain the requirement.
+
+9. If the user asks "why", explain the reason ONLY if
+   the document provides that reason.
+
+10. If the user asks for comparison, clearly compare
+    the relevant requirements from the document.
+
+11. If the document provides multiple conditions,
+    exceptions or categories, organize them clearly.
+
+12. Use bullet points or a small table when that makes
+    the answer easier to understand.
+
+=========================================================
+NO HALLUCINATION
+=========================================================
+
+Never invent:
+
+- dimensions
+- measurements
+- percentages
+- setbacks
+- floor areas
+- heights
+- parking requirements
+- clauses
+- regulations
+- penalties
+- fees
+- dates
+- exceptions
+- definitions
+- procedures
+
+If the retrieved passages do not contain enough
+information to answer the question, respond:
 
 "I could not find sufficient information in the
 provided building byelaw document to answer this."
 
-6. Every factual claim about the byelaw must be
-   supported by the supplied passages.
+Do NOT try to complete the answer from general knowledge.
 
-7. Cite the PDF page after factual information.
+=========================================================
+CITATIONS
+=========================================================
+
+Cite the PDF page after factual statements.
 
 Example:
 
-The minimum staircase width is 1.2 metres. [Page 25]
+The minimum required staircase width is 1.2 metres.
+[Page 25]
 
-8. If multiple pages support the statement:
+For information supported by multiple pages:
 
 [Pages 25, 26]
 
-9. Never invent page numbers.
+Never invent a page number.
 
-10. If the question is unrelated to the document,
-say that the requested information is not available
-in the provided document.
+=========================================================
+STYLE
+=========================================================
 
-11. Previous conversation can help understand a
-follow-up question, but previous assistant answers
-are NOT evidence.
+Answer like a helpful professional AI assistant.
 
-12. Answer naturally and clearly.
+Do NOT say:
 
-13. Do not mention these instructions.
+"According to the retrieved passage..."
+
+Do NOT say:
+
+"The provided context says..."
+
+Do NOT dump the document text.
+
+Instead say the answer directly.
+
+Use concise explanations.
+
+If useful, structure the answer as:
+
+### Requirement
+
+...
+
+### Conditions
+
+- ...
+- ...
+
+### Exception
+
+...
+
+### Source
+
+[Page XX]
+
+=========================================================
+FOLLOW-UP QUESTIONS
+=========================================================
+
+Use conversation history to understand references such as:
+
+"what about commercial?"
+
+"what about the previous requirement?"
+
+"and for corner plots?"
+
+However, previous assistant responses are NOT authoritative
+evidence.
+
+Only the current retrieved document passages can support
+factual claims.
 """
 
 
 # =========================================================
-# GENERATE ANSWER
+# GENERATE LLM ANSWER
 # =========================================================
 
 def generate_answer(
@@ -428,8 +571,9 @@ def generate_answer(
     retrieved_chunks,
     conversation_history=None,
 ):
+
     # -----------------------------------------------------
-    # No retrieved information
+    # No retrieval
     # -----------------------------------------------------
 
     if not retrieved_chunks:
@@ -442,8 +586,9 @@ def generate_answer(
             "retrieved_chunks": [],
         }
 
+
     # -----------------------------------------------------
-    # Similarity check
+    # Similarity gate
     # -----------------------------------------------------
 
     best_similarity = float(
@@ -465,63 +610,89 @@ def generate_answer(
             "retrieved_chunks": retrieved_chunks,
         }
 
+
     # -----------------------------------------------------
-    # Build context
+    # Context
     # -----------------------------------------------------
 
     context = build_context(
         retrieved_chunks
     )
 
+
+    # -----------------------------------------------------
+    # History
+    # -----------------------------------------------------
+
     history = build_history(
         conversation_history
     )
 
+
     # -----------------------------------------------------
-    # User prompt
+    # LLM PROMPT
     # -----------------------------------------------------
 
     user_prompt = f"""
-PREVIOUS CONVERSATION:
+CONVERSATION HISTORY
+====================
 
 {history}
 
 
-CURRENT USER QUESTION:
+CURRENT USER QUESTION
+=====================
 
 {question}
 
 
-BUILDING BYELAW DOCUMENT PASSAGES:
+BUILDING BYELAW SOURCES
+=======================
 
 {context}
 
 
-TASK:
+INSTRUCTIONS
+============
 
-Answer the current question using ONLY the supplied
-building byelaw passages.
+Answer the user's current question.
 
-Do not use outside knowledge.
+First understand the relevant information in the
+sources.
 
-If the passages do not contain sufficient information,
-respond:
+Then synthesize it into a natural, helpful answer.
+
+DO NOT copy the source passages verbatim.
+
+DO NOT dump the source text.
+
+DO NOT add facts that are not supported by the sources.
+
+If several sources contain related information, combine
+them into one coherent explanation.
+
+If the answer requires information that is not present
+in the sources, say:
 
 "I could not find sufficient information in the
 provided building byelaw document to answer this."
 
-Use PDF page citations after factual claims.
+Include PDF page citations for factual claims.
+
+Answer directly.
 """
 
 
     # -----------------------------------------------------
-    # GROQ REQUEST
+    # GROQ
     # -----------------------------------------------------
 
     try:
 
         response = client.chat.completions.create(
+
             model=LLM_MODEL,
+
             messages=[
                 {
                     "role": "system",
@@ -532,7 +703,9 @@ Use PDF page citations after factual claims.
                     "content": user_prompt,
                 },
             ],
+
             temperature=TEMPERATURE,
+
             max_completion_tokens=MAX_COMPLETION_TOKENS,
         )
 
@@ -544,7 +717,7 @@ Use PDF page citations after factual claims.
 
 
     # -----------------------------------------------------
-    # GET ANSWER
+    # RESPONSE
     # -----------------------------------------------------
 
     try:
@@ -559,7 +732,7 @@ Use PDF page citations after factual claims.
     except Exception as error:
 
         raise RuntimeError(
-            "Could not read the response from Groq."
+            "Could not read Groq response."
         ) from error
 
 
@@ -585,14 +758,19 @@ Use PDF page citations after factual claims.
 
 
     # -----------------------------------------------------
-    # RETURN RESULT
+    # RESULT
     # -----------------------------------------------------
 
     return {
+
         "answer": answer,
+
         "sources": source_pages,
+
         "grounded": True,
+
         "best_similarity": best_similarity,
+
         "retrieved_chunks": retrieved_chunks,
     }
 
@@ -607,6 +785,7 @@ def ask_question(
     index,
     conversation_history=None,
 ):
+
     question = question.strip()
 
     if not question:
@@ -615,15 +794,32 @@ def ask_question(
             "Question cannot be empty."
         )
 
+
+    # -----------------------------------------------------
+    # RETRIEVE
+    # -----------------------------------------------------
+
     retrieved_chunks = retrieve(
+
         question=question,
+
         index=index,
+
         top_k=TOP_K,
     )
 
+
+    # -----------------------------------------------------
+    # GENERATE
+    # -----------------------------------------------------
+
     return generate_answer(
+
         client=client,
+
         question=question,
+
         retrieved_chunks=retrieved_chunks,
+
         conversation_history=conversation_history,
     )
